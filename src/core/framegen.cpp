@@ -17,8 +17,10 @@ struct InterpCB {
     uint32_t outSize[2]; float invOut[2];
     float flowUvScale[2]; float invBase[2];
     float t; uint32_t mode; uint32_t isReal; uint32_t hasFlow;
-    uint32_t useDepth; float depthGain; float pad[2];
+    uint32_t useDepth; float depthGain; uint32_t quality; float pad;
 };
+struct RefineCB { uint32_t size[2]; float inv[2]; uint32_t grid[2]; float cell; float pad; };
+struct JbfCB { uint32_t size[2]; int32_t step; float sigmaL; };
 struct MvCB { uint32_t size[2]; float inv[2]; float flowUvScale[2]; float flowToPx; uint32_t hasFlow; uint32_t hasDepth; float pad[3]; };
 }
 
@@ -33,9 +35,11 @@ bool FrameGen::init(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     m_hudCS = createCS(dev, "hud.hlsl", "main", &m_err);
     m_interp = createCS(dev, "interp.hlsl", "main", &m_err);
     m_mvCS = createCS(dev, "mv.hlsl", "main", &m_err);
+    m_refine = createCS(dev, "refine.hlsl", "main", &m_err);
+    m_jbf = createCS(dev, "jbf.hlsl", "main", &m_err);
     { float one = 0.5f; createTex(dev, 1, 1, DXGI_FORMAT_R32_FLOAT, 0, m_depthDummy, &one, 4); }
     if (!m_up.init(dev, ctx)) { m_err = m_up.error; return false; }
-    m_ok = m_lumaColor && m_lumaDown && m_match && m_median && m_consist && m_hudCS && m_interp && m_mvCS;
+    m_ok = m_lumaColor && m_lumaDown && m_match && m_median && m_consist && m_hudCS && m_interp && m_mvCS && m_refine && m_jbf;
     if (!m_ok) logf("FrameGen init failed: %s", m_err.c_str());
     return m_ok;
 }
@@ -65,6 +69,9 @@ bool FrameGen::resize(UINT sw, UINT sh, UINT ow, UINT oh) {
     }
     r = r && createTex(m_dev, m_fwd[0].w, m_fwd[0].h, DXGI_FORMAT_R32G32_FLOAT, U, m_occ);
     r = r && createTex(m_dev, baseW, baseH, DXGI_FORMAT_R32_FLOAT, U, m_hud);
+    for (auto* t : {&m_dF, &m_dB, &m_dT1, &m_dT2, &m_occD})
+        r = r && createTex(m_dev, baseW, baseH, DXGI_FORMAT_R32G32_FLOAT, U, *t);
+    r = r && createTex(m_dev, baseW, baseH, DXGI_FORMAT_R32_FLOAT, U, m_costA);
     r = r && createTex(m_dev, sw, sh, DXGI_FORMAT_R8G8B8A8_UNORM, U, m_rgba);
     r = r && createTex(m_dev, sw, sh, DXGI_FORMAT_R16G16_FLOAT, U, m_mv);
     r = r && createTex(m_dev, sw, sh, DXGI_FORMAT_R32_FLOAT, U, m_depthIn);
@@ -132,6 +139,14 @@ bool FrameGen::pushFrame(ID3D11Texture2D* src, const D3D11_BOX& boxIn) {
     m_cb.set(m_ctx, &cc, sizeof cc);
     dispatch(m_ctx, m_consist.Get(), m_cb.buf.Get(), m_s, {m_fwd[0].srv.Get(), m_bwd[0].srv.Get()}, {m_occ.uav.Get()},
              divUp(cc.gridSize[0], 8), divUp(cc.gridSize[1], 8));
+    if (!params.legacy) {
+        densify(prev, nw, m_fwd[0], m_dF);
+        densify(nw, prev, m_bwd[0], m_dB);
+        ConsistCB dc{{baseW, baseH}, {1.0f / baseW, 1.0f / baseH}, 1.0f, params.occThr, {0, 0}};
+        m_cb.set(m_ctx, &dc, sizeof dc);
+        dispatch(m_ctx, m_consist.Get(), m_cb.buf.Get(), m_s, {m_dF.srv.Get(), m_dB.srv.Get()}, {m_occD.uav.Get()},
+                 divUp(baseW, 8), divUp(baseH, 8));
+    }
     HudCB hc{{baseW, baseH}, 2.5f / 255.0f, 0.12f, params.hudFrames, params.hud ? 1u : 0u, {0, 0}};
     m_cb.set(m_ctx, &hc, sizeof hc);
     int so = 1 - m_stableIdx;
@@ -144,15 +159,31 @@ bool FrameGen::pushFrame(ID3D11Texture2D* src, const D3D11_BOX& boxIn) {
     return true;
 }
 
+// Grid flow -> per-pixel (edge-aware candidate selection) -> 2 joint-bilateral passes.
+void FrameGen::densify(int a, int b, Tex2D& grid, Tex2D& out) {
+    RefineCB rc{{baseW, baseH}, {1.0f / baseW, 1.0f / baseH}, {grid.w, grid.h}, (float)kCell, 0};
+    m_cb.set(m_ctx, &rc, sizeof rc);
+    dispatch(m_ctx, m_refine.Get(), m_cb.buf.Get(), m_s, {m_pyr[a][0].srv.Get(), m_pyr[b][0].srv.Get(), grid.srv.Get()},
+             {m_dT1.uav.Get(), m_costA.uav.Get()}, divUp(baseW, 8), divUp(baseH, 8));
+    JbfCB j1{{baseW, baseH}, 1, 30.0f};
+    m_cb.set(m_ctx, &j1, sizeof j1);
+    dispatch(m_ctx, m_jbf.Get(), m_cb.buf.Get(), m_s, {m_dT1.srv.Get(), m_pyr[a][0].srv.Get(), m_costA.srv.Get()},
+             {m_dT2.uav.Get()}, divUp(baseW, 8), divUp(baseH, 8));
+    JbfCB j2{{baseW, baseH}, 2, 30.0f};
+    m_cb.set(m_ctx, &j2, sizeof j2);
+    dispatch(m_ctx, m_jbf.Get(), m_cb.buf.Get(), m_s, {m_dT2.srv.Get(), m_pyr[a][0].srv.Get(), m_costA.srv.Get()},
+             {out.uav.Get()}, divUp(baseW, 8), divUp(baseH, 8));
+}
+
 void FrameGen::upscaleNewest(int nw) {
     if (m_temporal && !m_temporalFailed) {
         bool flow = m_count >= 2;
         MvCB mc{{srcW, srcH}, {1.0f / srcW, 1.0f / srcH},
-                {(float)baseW / (m_bwd[0].w * kCell), (float)baseH / (m_bwd[0].h * kCell)},
+                {params.legacy ? (float)baseW / (m_bwd[0].w * kCell) : 1.0f, params.legacy ? (float)baseH / (m_bwd[0].h * kCell) : 1.0f},
                 (float)srcW / baseW, flow ? 1u : 0u, m_depthSRV ? 1u : 0u, {0, 0, 0}};
         m_cb.set(m_ctx, &mc, sizeof mc);
         dispatch(m_ctx, m_mvCS.Get(), m_cb.buf.Get(), m_s,
-                 {m_src.srv.Get(), m_bwd[0].srv.Get(), m_depthSRV ? m_depthSRV : m_depthDummy.srv.Get()},
+                 {m_src.srv.Get(), (params.legacy ? m_bwd[0] : m_dB).srv.Get(), m_depthSRV ? m_depthSRV : m_depthDummy.srv.Get()},
                  {m_rgba.uav.Get(), m_mv.uav.Get(), m_depthIn.uav.Get()}, divUp(srcW, 8), divUp(srcH, 8));
         TemporalInputs in;
         in.color = m_rgba.tex.Get(); in.mv = m_mv.tex.Get(); in.depth = m_depthIn.tex.Get();
@@ -169,16 +200,17 @@ void FrameGen::upscaleNewest(int nw) {
 void FrameGen::render(float t, bool real, int mode, ID3D11UnorderedAccessView* out) {
     if (!m_ok || m_count == 0) return;
     bool pair = m_count >= 2;
+    bool lg = params.legacy;
     InterpCB cb{{outW, outH}, {1.0f / outW, 1.0f / outH},
-                {(float)baseW / (m_fwd[0].w * kCell), (float)baseH / (m_fwd[0].h * kCell)},
+                {lg ? (float)baseW / (m_fwd[0].w * kCell) : 1.0f, lg ? (float)baseH / (m_fwd[0].h * kCell) : 1.0f},
                 {1.0f / baseW, 1.0f / baseH}, t, (uint32_t)mode, (real || !pair) ? 1u : 0u, pair ? 1u : 0u,
-                m_depthSRV ? 1u : 0u, depthGain, {0, 0}};
+                m_depthSRV ? 1u : 0u, depthGain, lg ? 0u : 1u, 0};
     m_cb.set(m_ctx, &cb, sizeof cb);
     int prev = pair ? 1 - m_newest : m_newest;
     // Flow values are in base pixels; the shader converts using the flow texture size (grid*cell).
     dispatch(m_ctx, m_interp.Get(), m_cb.buf.Get(), m_s,
-             {m_color[prev].srv.Get(), m_color[m_newest].srv.Get(), m_fwd[0].srv.Get(), m_bwd[0].srv.Get(),
-              m_occ.srv.Get(), m_hud.srv.Get(), m_depthSRV ? m_depthSRV : m_depthDummy.srv.Get()},
+             {m_color[prev].srv.Get(), m_color[m_newest].srv.Get(), (lg ? m_fwd[0] : m_dF).srv.Get(),
+              (lg ? m_bwd[0] : m_dB).srv.Get(), (lg ? m_occ : m_occD).srv.Get(), m_hud.srv.Get(), m_depthSRV ? m_depthSRV : m_depthDummy.srv.Get()},
              {out}, divUp(outW, 8), divUp(outH, 8));
 }
 }

@@ -106,6 +106,8 @@ set(FF_SHADERS
   ${CMAKE_SOURCE_DIR}/shaders/fsr_easu.hlsl
   ${CMAKE_SOURCE_DIR}/shaders/fsr_rcas.hlsl
   ${CMAKE_SOURCE_DIR}/shaders/mv.hlsl
+  ${CMAKE_SOURCE_DIR}/shaders/refine.hlsl
+  ${CMAKE_SOURCE_DIR}/shaders/jbf.hlsl
   ${FFX_DIR}/ffx_a.h
   ${FFX_DIR}/ffx_fsr1.h)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${FF_SHADERS})
@@ -170,7 +172,7 @@ add_custom_command(TARGET FrameForge POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy
 
 # --- Headless tests (WARP) --------------------------------------------------
 add_executable(frameforge_tests tests/main.cpp)
-target_link_libraries(frameforge_tests PRIVATE ffcore)
+target_link_libraries(frameforge_tests PRIVATE ffcore windowscodecs ole32)
 target_link_options(frameforge_tests PRIVATE /DELAYLOAD:onnxruntime.dll)
 enable_testing()
 add_test(NAME headless COMMAND frameforge_tests)

@@ -19,6 +19,7 @@ public:
         float occThr = 1.0f;      // px
         bool useFsr = true;
         float sharpness = 0.5f;
+        bool legacy = false;      // v0.1 path: 4x4 grid flow sampled bilinearly
     } params;
 
     bool init(ID3D11Device* dev, ID3D11DeviceContext* ctx);
@@ -50,6 +51,7 @@ public:
     Tex2D& flowFwd() { return m_fwd[0]; }
     Tex2D& flowBwd() { return m_bwd[0]; }
     Tex2D& occlusion() { return m_occ; }
+    Tex2D& denseFwd() { return m_dF; }
     Tex2D& hudMask() { return m_hud; }
     UINT gridW(int l = 0) const { return m_fwd[l].w; }
     UINT gridH(int l = 0) const { return m_fwd[l].h; }
@@ -72,6 +74,9 @@ private:
     ID3D11ShaderResourceView* m_depthSRV = nullptr;
     Tex2D m_depthDummy;
     void upscaleNewest(int nw);
+    void densify(int a, int b, Tex2D& grid, Tex2D& out);
+    ComPtr<ID3D11ComputeShader> m_refine, m_jbf;
+    Tex2D m_dF, m_dB, m_dT1, m_dT2, m_occD, m_costA;
     int m_newest = 0, m_stableIdx = 0;
     uint64_t m_count = 0;
     bool m_ok = false;

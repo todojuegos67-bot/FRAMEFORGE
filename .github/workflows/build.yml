@@ -71,6 +71,23 @@ jobs:
           "``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           exit $code
 
+      - name: Interpolation quality on Middlebury (real sequences)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force mb | Out-Null
+          Invoke-WebRequest "https://vision.middlebury.edu/flow/data/comp/zip/other-color-allframes.zip" -OutFile mb\frames.zip
+          Invoke-WebRequest "https://vision.middlebury.edu/flow/data/comp/zip/other-gt-interp.zip" -OutFile mb\gt.zip
+          Expand-Archive mb\frames.zip -DestinationPath mb -Force
+          Expand-Archive mb\gt.zip -DestinationPath mb -Force
+          "::notice::middlebury dirs: " + ((Get-ChildItem mb -Directory -Recurse -Depth 1 | ForEach-Object { $_.FullName.Substring((Resolve-Path mb).Path.Length) }) -join ', ')
+          $frames = (Get-ChildItem mb -Directory -Recurse | Where-Object { Test-Path "$($_.FullName)\*\frame10.png" } | Select-Object -First 1).FullName
+          $gt = (Get-ChildItem mb -Directory -Recurse | Where-Object { Test-Path "$($_.FullName)\*\frame10i11.png" } | Select-Object -First 1).FullName
+          $out = & build\Release\frameforge_tests.exe --eval $frames $gt
+          $code = $LASTEXITCODE
+          "::notice::EVAL " + ($out -join ' || ')
+          exit $code
+
       - name: Package
         shell: pwsh
         run: |

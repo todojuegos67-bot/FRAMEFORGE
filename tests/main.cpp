@@ -5,6 +5,8 @@
 #include "core/log.h"
 #include "core/temporal.h"
 #include "core/depth_ai.h"
+#include "eval.h"
+#include <map>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -166,8 +168,71 @@ static void testDepthModel(const wchar_t* model) {
           DepthEstimator::kW, DepthEstimator::kH, d.inferMs(), mn, mx);
 }
 
+// Middlebury evaluation: for each sequence with frame10.png, frame11.png and a ground-truth
+// frame10i11.png, interpolate t=0.5 with several methods and report PSNR / SSIM.
+static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstring& framesDir, const std::wstring& gtDir) {
+    namespace fs = std::filesystem;
+    struct M { const char* name; int kind; int ds; bool legacy; };
+    const M methods[] = {{"repeat-previous", 0, 0, false}, {"linear-blend", 1, 0, false},
+                         {"v0.1 (grid flow, ds2)", 2, 2, true}, {"v0.2 (dense flow, ds2)", 2, 2, false},
+                         {"v0.2 (dense flow, ds1)", 2, 1, false}};
+    const int NM = 5;
+    double sp[NM] = {}, ss[NM] = {}; int nseq = 0;
+    std::string table;
+    for (auto& e : fs::directory_iterator(gtDir)) {
+        if (!e.is_directory()) continue;
+        std::wstring seq = e.path().filename().wstring();
+        eval::Img a, b, gt;
+        if (!eval::loadPng(e.path() / L"frame10i11.png", gt) || !eval::loadPng(fs::path(framesDir) / seq / L"frame10.png", a) ||
+            !eval::loadPng(fs::path(framesDir) / seq / L"frame11.png", b) || a.w != gt.w || b.w != gt.w || a.h != gt.h) continue;
+        UINT w = gt.w, h = gt.h;
+        auto gl = eval::lumaBGRA(gt.bgra);
+        char line[512]; int off = snprintf(line, sizeof line, "%ls:", seq.c_str());
+        for (int m = 0; m < NM; ++m) {
+            std::vector<uint8_t> rgba((size_t)w * h * 4);
+            if (methods[m].kind == 0) {
+                for (size_t i = 0; i < rgba.size(); i += 4) { rgba[i] = a.bgra[i + 2]; rgba[i + 1] = a.bgra[i + 1]; rgba[i + 2] = a.bgra[i]; rgba[i + 3] = 255; }
+            } else if (methods[m].kind == 1) {
+                for (size_t i = 0; i < rgba.size(); i += 4)
+                    for (int c = 0; c < 3; ++c) rgba[i + c] = (uint8_t)((a.bgra[i + 2 - c] + b.bgra[i + 2 - c] + 1) / 2);
+            } else {
+                FrameGen g; g.params.downscale = methods[m].ds; g.params.legacy = methods[m].legacy; g.params.useFsr = false;
+                g.params.hud = false;
+                g.init(dev, ctx); g.resize(w, h, w, h);
+                Tex2D ta, tb, out;
+                createTex(dev, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, 0, ta, a.bgra.data(), w * 4);
+                createTex(dev, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, 0, tb, b.bgra.data(), w * 4);
+                createTex(dev, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS, out);
+                D3D11_BOX box{0, 0, 0, w, h, 1};
+                g.pushFrame(ta.tex.Get(), box); g.pushFrame(tb.tex.Get(), box);
+                g.render(0.5f, false, 0, out.uav.Get());
+                readback(dev, ctx, out.tex.Get(), 4, rgba);
+            }
+            double p = eval::psnr(rgba, gt), q = eval::ssim(eval::lumaRGBA(rgba), gl, w, h);
+            sp[m] += p; ss[m] += q;
+            off += snprintf(line + off, sizeof line - off, " %s %.2f/%.4f;", methods[m].name, p, q);
+        }
+        std::printf("[EVAL] %s\n", line);
+        ++nseq;
+    }
+    if (!nseq) { std::printf("[FAIL] eval: no sequences found\n"); return 1; }
+    for (int m = 0; m < NM; ++m)
+        std::printf("[EVAL] mean over %d sequences: %s PSNR %.2f dB SSIM %.4f\n", nseq, methods[m].name, sp[m] / nseq, ss[m] / nseq);
+    bool better = sp[3] > sp[2] && ss[3] > ss[2] && sp[3] > sp[0] && ss[3] > ss[0];
+    std::printf("[%s] v0.2 ds2 beats v0.1 and repeat-previous on mean PSNR and SSIM\n", better ? "PASS" : "FAIL");
+    return better ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
     logInit(exeDir() + L"\\frameforge_tests.log");
+    if (argc > 3 && std::string(argv[1]) == "--eval") {
+        ComPtr<ID3D11Device> d; ComPtr<ID3D11DeviceContext> c;
+        D3D_FEATURE_LEVEL f = D3D_FEATURE_LEVEL_11_0;
+        D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, &f, 1, D3D11_SDK_VERSION, &d, nullptr, &c);
+        wchar_t a1[MAX_PATH], a2[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, argv[2], -1, a1, MAX_PATH); MultiByteToWideChar(CP_UTF8, 0, argv[3], -1, a2, MAX_PATH);
+        return runEval(d.Get(), c.Get(), a1, a2);
+    }
     testPacer();
 
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx;

@@ -12,7 +12,7 @@ cbuffer C : register(b0) {
     uint2 outSize; float2 invOut;
     float2 flowUvScale; float2 invBase;
     float t; uint mode; uint isReal; uint hasFlow;
-    uint useDepth; float depthGain; float2 pad;
+    uint useDepth; float depthGain; uint quality; float pad;
 };
 
 float3 hsv2rgb(float h, float s, float v) {
@@ -55,6 +55,21 @@ void main(uint3 id : SV_DispatchThreadID) {
         }
         if (wA + wB < 1e-3) { wA = 1.0 - t; wB = t; }
         col = (cA * wA + cB * wB) / (wA + wB);
+        if (quality) {
+            float3 nA = gA.SampleLevel(sPoint, uv, 0).rgb, nB = gB.SampleLevel(sPoint, uv, 0).rgb;
+            float3 nearest = t < 0.5 ? nA : nB;
+            // Low confidence: the two warps disagree and no occlusion explains it -> do not warp,
+            // show the nearest real frame instead of a ghosted blend.
+            float3 dd = abs(cA - cB);
+            float disagree = max(dd.r, max(dd.g, dd.b));
+            float occ = max(oA, oB);
+            float lowConf = saturate((disagree - 0.08) / 0.08) * (1.0 - occ);
+            col = lerp(col, nearest, lowConf);
+            // Static: unchanged pixel with negligible motion -> copy 1:1.
+            float3 sd = abs(nA - nB);
+            float still = (max(sd.r, max(sd.g, sd.b)) < 2.5 / 255.0 && length(f01) < 0.25 && length(f10) < 0.25) ? 1.0 : 0.0;
+            col = lerp(col, nB, still);
+        }
         float3 hudCol = t < 0.5 ? gA.SampleLevel(sPoint, uv, 0).rgb : gB.SampleLevel(sPoint, uv, 0).rgb;
         col = lerp(col, hudCol, hud);
     }
