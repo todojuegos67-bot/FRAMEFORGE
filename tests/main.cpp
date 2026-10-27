@@ -220,7 +220,7 @@ static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstri
     if (!nseq) { std::printf("[FAIL] eval: no sequences found\n"); return 1; }
     for (int m = 0; m < NM; ++m)
         std::printf("[EVAL] mean over %d sequences: %s PSNR %.2f dB SSIM %.4f\n", nseq, methods[m].name, sp[m] / nseq, ss[m] / nseq);
-    int ship = std::getenv("FF_SHIP_METHOD") ? std::atoi(std::getenv("FF_SHIP_METHOD")) : 5;
+    int ship = std::getenv("FF_SHIP_METHOD") ? std::atoi(std::getenv("FF_SHIP_METHOD")) : 8;
     bool better = sp[ship] > sp[2] && ss[ship] > ss[2] && sp[ship] > sp[0] && ss[ship] > ss[0];
     std::printf("[%s] '%s' beats v0.1 and repeat-previous on mean PSNR and SSIM\n", better ? "PASS" : "FAIL", methods[ship].name);
     return better ? 0 : 1;

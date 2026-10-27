@@ -16,3 +16,19 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Desde / since v0.2:
+* AMD FidelityFX SDK v2.3.0 (https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK):
+  - API headers (ffx_api*.h, ffx_upscale.h): MIT (listed as MIT in Kits/FidelityFX/docs/license.md). Used at build time only.
+  - amd_fidelityfx_loader_dx12.dll, amd_fidelityfx_upscaler_dx12.dll: AMD binary redistribution licence
+    (NOT MIT): redistribution in binary form allowed, no reverse engineering, notice must be reproduced.
+    Full text: licenses/AMD_FidelityFX_SDK_license.md
+* Intel XeSS SDK (https://github.com/intel/xess, commit de0fb9c): libxess_dx11.dll under the
+  Intel Simplified Software License (October 2022): redistribution in binary form without modification
+  allowed, no reverse engineering, notice must be reproduced. Full text: licenses/Intel_XeSS_LICENSE.txt
+* ONNX Runtime 1.20.1 (DirectML build, NuGet Microsoft.ML.OnnxRuntime.DirectML) - MIT. licenses/onnxruntime_*
+* DirectML 1.15.4 (NuGet Microsoft.AI.DirectML) - Microsoft redistributable licence. licenses/DirectML_*
+* Microsoft Visual C++ runtime (msvcp140.dll, vcruntime140*.dll) - redistributable files from Visual Studio
+  (needed by libxess_dx11.dll).
+* Depth-Anything-V2-Small (ONNX export onnx-community/depth-anything-v2-small) - Apache-2.0. NOT bundled:
+  downloaded on first use from Hugging Face and verified by SHA-256.

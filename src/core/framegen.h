@@ -20,7 +20,7 @@ public:
         bool useFsr = true;
         float sharpness = 0.5f;
         bool legacy = false;
-        float fbLo = 0.25f, fbRamp = 0.15f;  // colour disagreement thresholds for the fallback
+        float fbLo = 0.40f, fbRamp = 0.20f;  // colour disagreement thresholds for the fallback
         bool fallback = true;     // low-confidence -> nearest real frame; static -> 1:1 copy      // v0.1 path: 4x4 grid flow sampled bilinearly
     } params;
 

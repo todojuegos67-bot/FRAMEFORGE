@@ -14,7 +14,10 @@ superpuesta, transparente al ratón y excluida de la captura.
 | Compilación MSVC + CMake en GitHub Actions | sí |
 | Prueba sin GPU (WARP): flujo, oclusión, máscara HUD, interpolación, FSR1, nº de fotogramas | automatizada en CI |
 | Captura WGC, overlay, ritmo y latencia en una GPU real con un juego real | **sin probar** (CI no tiene GPU) |
-| FSR 3.1 / XeSS / "Modo IA" | no incluido en esta versión (ver hoja de ruta) |
+| Contador FPS en pantalla (Ctrl+Alt+H) | implementado; sin probar en juego |
+| FSR 3.1 (D3D12 + interop D3D11) | compila; en WARP la creación del contexto falla → **sin verificar** |
+| XeSS SR (D3D11) | compila; en WARP `xessD3D11CreateContext` falla (requiere GPU Intel) → **sin verificar** |
+| Modo IA (profundidad, ONNX Runtime + DirectML) | el modelo carga y infiere en CI (CPU, ~70-130 ms a 266x154); DirectML y efecto en juego **sin verificar** |
 
 No se publican cifras de rendimiento ni de calidad porque aún no se han medido en hardware real.
 
@@ -48,6 +51,25 @@ además del *backend* D3D12/Vulkan del SDK; un fotograma capturado no tiene prof
 versión usa el camino propio y solo escaladores espaciales. **Los fotogramas capturados no llevan jitter ni
 profundidad, así que un escalador temporal tendría menos información que dentro del motor.**
 
+## Calidad de interpolación medida (v0.2)
+
+Middlebury "other" (12 secuencias reales/sintéticas con fotograma intermedio real `frame10i11`),
+t = 0,5, ejecutado en CI con WARP. Media PSNR (RGB) / SSIM (luma):
+
+| Método | PSNR dB | SSIM |
+|---|---|---|
+| repetir fotograma anterior | 24,75 | 0,7683 |
+| mezcla lineal | 28,00 | 0,8146 |
+| v0.1 (flujo por bloques 4x4) | 34,32 | 0,9629 |
+| v0.2 flujo denso sin respaldo | 34,40 | 0,9652 |
+| **v0.2 por defecto** (denso + respaldo de baja confianza 0,40) | **34,36** | **0,9650** |
+| v0.2 denso + respaldo agresivo 0,08 | 32,47 | 0,9565 |
+
+La mejora frente a v0.1 en esta prueba es **pequeña** (+0,04 dB, +0,002 SSIM). El respaldo
+("no deformar si la confianza es baja") baja algo el PSNR pero evita ghosting grosero; la copia 1:1
+de píxeles estáticos no cambia estas cifras. No se ha medido en capturas de juegos reales.
+Los datos de Middlebury solo se descargan en CI para evaluar; no se redistribuyen.
+
 ## Uso
 
 Ver [`packaging/LEEME.txt`](packaging/LEEME.txt) (se incluye en el zip).
@@ -62,15 +84,17 @@ build\Release\frameforge_tests.exe
 
 ## Hoja de ruta
 
-1. Medir en GPUs reales (latencia con herramientas externas, coste en ms por paso).
-2. FSR 3.1 *upscaling* (D3D12) alimentado con nuestros vectores de movimiento.
-3. XeSS SR si la licencia permite redistribuir `libxess.dll`.
-4. "Modo IA" opcional: profundidad monocular (ONNX + DirectML) para oclusiones ordenadas por profundidad
-   y SR por red neuronal con licencia permisiva. Desactivado por defecto.
+1. Medir en GPUs reales (latencia, coste en ms por paso, FSR 3.1/XeSS/DirectML).
+2. Evaluar con capturas reales de juegos (HUD, partículas, transparencias).
+3. Refinar el flujo con bordes de profundidad (no hecho) y SR neuronal (no hecho).
 
 ## Licencias de terceros
 
-Ver [`THIRD_PARTY.txt`](THIRD_PARTY.txt): Dear ImGui (MIT), AMD FSR 1 (MIT), d3dcompiler_47 (Microsoft).
+Ver [`THIRD_PARTY.txt`](THIRD_PARTY.txt) y la carpeta `licenses/` del zip: Dear ImGui (MIT), AMD FSR 1 (MIT),
+FidelityFX SDK v2.3.0 (cabeceras MIT; **DLLs firmadas con licencia binaria de AMD, no MIT**), Intel XeSS
+(Intel Simplified Software License: redistribución binaria permitida sin modificar), ONNX Runtime (MIT),
+DirectML (licencia redistribuible de Microsoft), Depth-Anything-V2-Small (Apache-2.0, se descarga al primer
+uso y se verifica con SHA-256; no se incluye).
 
 ---
 
@@ -88,7 +112,9 @@ interpolation error against ground truth, FSR1 output and frame counts. Capture,
 on a real GPU with a real game are **untested**. No performance or quality figures are claimed.
 
 **Temporal upscalers:** captured frames are not jittered and have no depth, so FSR 3.1 or XeSS would have less
-to work with than inside an engine. This release ships spatial upscalers only.
+to work with than inside an engine. v0.2 adds FSR 3.1 (D3D12 interop) and XeSS SR (D3D11, Intel GPUs) fed with our optical-flow vectors and constant or AI-estimated depth; neither could be verified in CI (WARP).
+
+**Measured (Middlebury, 12 sequences, t=0.5):** v0.1 34.32 dB / 0.9629 SSIM; v0.2 default 34.36 dB / 0.9650; repeat-previous 24.75 / 0.7683. The gain over v0.1 is small.
 
 Usage: see `packaging/LEEME.txt` (Spanish). Run the game windowed/borderless, pick it in the list (or press
 Ctrl+Alt+F on it), choose a multiplier and an upscaler. Settings: `frameforge.ini`; log: `frameforge.log`.
