@@ -31,6 +31,7 @@ jobs:
             try { $rel = (gh api "repos/$r/releases/latest" | ConvertFrom-Json).tag_name } catch {}
             try { $lic = (gh api "repos/$r/license" | ConvertFrom-Json).license.spdx_id } catch {}
             "* $r : latest release **$rel**, licence **$lic**" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "::notice::$r latest $rel licence $lic"
           }
 
       - name: Configure
@@ -40,7 +41,15 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Headless tests (WARP)
-        run: build\Release\frameforge_tests.exe
+        shell: pwsh
+        run: |
+          $out = & build\Release\frameforge_tests.exe
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { if ($_ -like '*FAIL*') { "::error::$_" } else { "::notice::$_" } }
+          "``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          exit $code
 
       - name: Package
         shell: pwsh
@@ -55,6 +64,7 @@ jobs:
           Compress-Archive -Path "$d\*" -DestinationPath dist\FrameForge-win64.zip -Force
           $md5 = (Get-FileHash dist\FrameForge-win64.zip -Algorithm MD5).Hash.ToLower()
           "FrameForge-win64.zip md5: $md5" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "::notice::FrameForge-win64.zip md5 $md5"
 
       - uses: actions/upload-artifact@v4
         with:

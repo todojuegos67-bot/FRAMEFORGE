@@ -1,0 +1,40 @@
+FrameForge 0.1 - LEEME
+======================
+
+Que es
+------
+FrameForge captura la ventana de un juego con Windows Graphics Capture, calcula flujo optico propio
+en la GPU, opcionalmente escala la imagen (FSR 1 o bilineal) y genera fotogramas intermedios (x2, x3, x4)
+que muestra en una ventana superpuesta. NO inyecta nada en el juego.
+
+Requisitos
+----------
+* Windows 10 2004 o posterior (Windows 11 recomendado: sin borde amarillo de captura y menor intervalo).
+* GPU con Direct3D 11 (feature level 11.0).
+* El juego debe ejecutarse en modo VENTANA o VENTANA SIN BORDES (no pantalla completa exclusiva).
+
+Uso
+---
+1. Descomprime el zip en una carpeta y ejecuta FrameForge.exe.
+2. Abre el juego en ventana. Para escalar, usa una ventana pequena (p. ej. 960x540 o 1280x720).
+3. En el panel elige la ventana del juego en la lista y pulsa "Iniciar",
+   o pon el juego en primer plano y pulsa Ctrl+Alt+F (vuelve a pulsarlo para detener).
+4. Elige el multiplicador (x2, x3, x4). x1 = sin generacion.
+5. Escalado: "Desactivado" dibuja encima de la ventana 1:1. "FSR 1" o "Bilineal" muestran el juego
+   a pantalla completa en su monitor con la escala elegida (1.5x, 2x, 3x o ajustar a pantalla).
+6. Nitidez: controla RCAS (solo con FSR 1).
+7. Vista depuracion: flujo (color = direccion), oclusion (rojo/verde) o mascara HUD (magenta).
+8. El raton y el teclado siguen yendo al juego (el overlay no recibe clics). Con escalado a pantalla
+   completa la posicion del raton no coincide con la imagen escalada: usalo con juegos de mando/teclado
+   o con el escalado desactivado.
+9. Los ajustes se guardan en frameforge.ini y el registro en frameforge.log (junto al exe).
+
+Limitaciones honestas
+---------------------
+* Los fotogramas capturados no tienen "jitter" ni profundidad, asi que cualquier escalador temporal
+  (FSR 3.1, XeSS) tiene menos informacion que dentro del motor del juego. Esta version solo incluye
+  escaladores espaciales (FSR 1 y bilineal).
+* La generacion de fotogramas retiene el fotograma real como maximo (M-1)/M de un intervalo de captura
+  para poder interpolar; eso es latencia anadida. El panel muestra una estimacion medida en CPU.
+* Calidad y rendimiento en GPU real NO se han medido todavia: la integracion continua solo dispone
+  de WARP (GPU por software).
