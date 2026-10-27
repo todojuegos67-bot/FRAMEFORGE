@@ -16,6 +16,7 @@ class DepthEstimator {
 public:
     static constexpr UINT kW = 266, kH = 154;  // multiples of 14 (ViT patch size), ~16:9
     static const wchar_t* kModelUrl;
+    DepthEstimator();
     ~DepthEstimator();
     static std::wstring defaultModelPath();
     bool modelPresent(const std::wstring& path) const;

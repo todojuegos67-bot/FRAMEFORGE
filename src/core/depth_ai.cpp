@@ -75,6 +75,8 @@ void DepthEstimator::startDownload(const std::wstring& path) {
     });
 }
 
+DepthEstimator::DepthEstimator() = default;
+
 DepthEstimator::~DepthEstimator() {
     { std::lock_guard<std::mutex> l(m_mx); m_quit = true; }
     m_cv.notify_all();
