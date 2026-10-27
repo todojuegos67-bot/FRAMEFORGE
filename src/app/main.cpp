@@ -18,6 +18,8 @@
 #include "core/gpu.h"
 #include "core/log.h"
 #include "core/pacer.h"
+#include "core/temporal.h"
+#include "core/depth_ai.h"
 #include "app/capture.h"
 #include "app/overlay.h"
 #include <winrt/base.h>
@@ -28,6 +30,7 @@ using namespace ff;
 
 namespace {
 constexpr int kHotkeyId = 1;
+constexpr int kHotkeyOsd = 2;
 
 struct WinEntry { HWND h; std::string title; };
 
@@ -49,6 +52,11 @@ struct App {
     FrameGen gen;
     Pacer pacer;
     Tex2D out;
+    std::unique_ptr<TemporalUpscaler> fsr3, xess;
+    std::string fsr3Err, xessErr;
+    bool fsr3Tried = false, xessTried = false;
+    DepthEstimator depth;
+    std::string depthErr;
 
     bool running = false;
     HWND target = nullptr;
@@ -68,8 +76,8 @@ struct App {
 
     // stats
     uint64_t frameId = 0;
-    int realCount = 0, outCount = 0;
-    double statT0 = 0, realFps = 0, outFps = 0, latencyMs = 0, procMs = 0;
+    int realCount = 0, outCount = 0, genCount = 0;
+    double statT0 = 0, realFps = 0, outFps = 0, genFps = 0, latencyMs = 0, procMs = 0;
     bool quit = false;
 } g;
 
@@ -113,6 +121,27 @@ void applyParams() {
     g.gen.params.useFsr = g.cfg.upscale == (int)UpscaleMode::Fsr1;
     g.gen.params.sharpness = g.cfg.sharpness;
     g.pacer.setMultiplier(g.passthrough ? 1 : g.cfg.multiplier);
+    g.gen.mvScale = g.cfg.mvSign;
+    TemporalUpscaler* t = nullptr;
+    if (g.cfg.upscale == (int)UpscaleMode::Fsr3) {
+        if (!g.fsr3Tried) {
+            g.fsr3Tried = true;
+            g.fsr3 = createFsr3Upscaler();
+            if (!g.fsr3->init(g.dev.Get(), g.ctx.Get(), exeDir(), &g.fsr3Err)) g.fsr3.reset();
+        }
+        t = g.fsr3.get();
+    } else if (g.cfg.upscale == (int)UpscaleMode::Xess) {
+        if (!g.xessTried) {
+            g.xessTried = true;
+            g.xess = createXessUpscaler();
+            std::wstring p = g.cfg.xessDll.empty() ? exeDir() : g.cfg.xessDll;
+            if (!g.xess->init(g.dev.Get(), g.ctx.Get(), p, &g.xessErr)) g.xess.reset();
+        }
+        t = g.xess.get();
+    }
+    // Spatial FSR1 stays as the fallback when a temporal upscaler is missing or fails.
+    if (g.cfg.upscale >= (int)UpscaleMode::Fsr3) g.gen.params.useFsr = true;
+    g.gen.setTemporal(t);
 }
 
 void stopCapture(const char* why) {
@@ -175,7 +204,10 @@ bool updateGeometry(UINT capW, UINT capH) {
     }
     if (!g.overlay.place(ov)) return false;
     g.overlayRect = ov;
-    if (sw != g.srcW || sh != g.srcH || ow != g.outW || oh != g.outH || g.appliedDownscale != g.cfg.flowDownscale) {
+    if (sw != g.srcW || sh != g.srcH || ow != g.outW || oh != g.outH || g.appliedDownscale != g.cfg.flowDownscale ||
+        g.appliedUpscale != g.cfg.upscale) {
+        g.appliedUpscale = g.cfg.upscale;
+        applyParams();
         g.srcW = sw; g.srcH = sh; g.outW = ow; g.outH = oh; g.appliedDownscale = g.cfg.flowDownscale;
         g.gen.params.downscale = g.cfg.flowDownscale;
         bool ok = g.gen.ok() && g.gen.resize(sw, sh, ow, oh) &&
@@ -199,6 +231,7 @@ void presentItem(const PaceItem& it) {
         okp = g.overlay.present(g.out.srv.Get(), g.dstRect, g.cfg.vrr != 0);
     }
     ++g.outCount;
+    if (!it.real && !g.passthrough && g.gen.hasPair()) ++g.genCount;
     if (it.real) {
         double l = (nowSeconds() - it.arrival) * 1000.0;
         g.latencyMs = g.latencyMs * 0.9 + l * 0.1;
@@ -237,7 +270,12 @@ void tickCapture() {
                 b.right = std::min(b.right, f.w); b.bottom = std::min(b.bottom, f.h);
                 g.ctx->CopySubresourceRegion(g.out.tex.Get(), 0, 0, 0, 0, f.tex, 0, &b);
             } else {
+                bool useDepth = g.cfg.aiDepth && g.depth.ready();
+                if (useDepth) g.depth.update();
+                g.gen.setDepth(useDepth ? g.depth.depthSRV() : nullptr);
+                g.gen.frameMs = (float)(g.pacer.interval() * 1000.0);
                 g.gen.pushFrame(f.tex, g.crop);
+                if (useDepth) g.depth.submit(g.gen.sourceSRV(), (UINT)g.cfg.aiInterval);
             }
             g.pacer.onRealFrame(t0, f.sysTime, ++g.frameId);
             ++g.realCount;
@@ -267,6 +305,7 @@ LRESULT CALLBACK UiProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w != SIZE_MINIMIZED) { g.uiW = LOWORD(l); g.uiH = HIWORD(l); g.uiResize = true; }
         return 0;
     case WM_HOTKEY:
+        if (w == kHotkeyOsd) { g.cfg.osd = !g.cfg.osd; return 0; }
         if (w == kHotkeyId) {
             if (g.running) stopCapture("hotkey");
             else startCapture(GetForegroundWindow());
@@ -283,7 +322,7 @@ void drawUi() {
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
     ImGui::Begin("FrameForge", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("FrameForge 0.1");
+    ImGui::TextUnformatted("FrameForge 0.2");
     ImGui::SameLine();
     const char* langs[] = {"Español", "English"};
     ImGui::SetNextItemWidth(110);
@@ -318,12 +357,52 @@ void drawUi() {
     bool hud = g.cfg.hudMask != 0;
     if (ImGui::Checkbox(tr("Proteger HUD estático", "Protect static HUD"), &hud)) { g.cfg.hudMask = hud; applyParams(); }
     ImGui::SliderInt(tr("Resolución flujo (÷)", "Flow resolution (÷)"), &g.cfg.flowDownscale, 1, 4);
-    const char* dbg[] = {"-", "Flujo / Flow", "Oclusión / Occlusion", "HUD"};
-    ImGui::Combo(tr("Vista depuración", "Debug view"), &g.cfg.debugView, dbg, 4);
+    const char* dbg[] = {"-", "Flujo / Flow", "Oclusión / Occlusion", "HUD", tr("Profundidad IA", "AI depth")};
+    ImGui::Combo(tr("Vista depuración", "Debug view"), &g.cfg.debugView, dbg, 5);
+    bool osd = g.cfg.osd != 0;
+    if (ImGui::Checkbox(tr("Contador FPS en pantalla (Ctrl+Alt+H)", "On-screen FPS counter (Ctrl+Alt+H)"), &osd)) g.cfg.osd = osd;
+
+    ImGui::SeparatorText(tr("Modo IA (opcional, experimental)", "AI mode (optional, experimental)"));
+    {
+        std::wstring mp = DepthEstimator::defaultModelPath();
+        bool present = g.depth.modelPresent(mp);
+        bool ai = g.cfg.aiDepth != 0;
+        if (ImGui::Checkbox(tr("Profundidad monocular para oclusiones", "Monocular depth for occlusions"), &ai)) {
+            g.cfg.aiDepth = ai;
+            if (ai && present && !g.depth.ready() && !g.depth.init(g.dev.Get(), g.ctx.Get(), mp, &g.depthErr)) g.cfg.aiDepth = 0;
+        }
+        ImGui::TextDisabled("%s", tr("Depth-Anything-V2-Small (Apache-2.0), ONNX Runtime + DirectML", "Depth-Anything-V2-Small (Apache-2.0), ONNX Runtime + DirectML"));
+        if (!present) {
+            if (g.depth.downloading()) ImGui::TextUnformatted(tr("Descargando modelo...", "Downloading model..."));
+            else if (ImGui::Button(tr("Descargar modelo (~100 MB, Hugging Face)", "Download model (~100 MB, Hugging Face)")))
+                g.depth.startDownload(mp);
+            std::string ds = g.depth.downloadStatus();
+            if (!ds.empty() && !g.depth.downloading()) ImGui::Text("%s", ds.c_str());
+        }
+        ImGui::SliderInt(tr("Cada N fotogramas reales", "Every N real frames"), &g.cfg.aiInterval, 1, 16);
+        if (g.depth.ready())
+            ImGui::Text("%s: %.1f ms (%s, %s)", tr("Inferencia", "Inference"), g.depth.inferMs(), g.depth.usingGpu() ? "DirectML" : "CPU",
+                        tr("hilo aparte", "worker thread"));
+        if (!g.depthErr.empty()) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", g.depthErr.c_str());
+        ImGui::TextWrapped("%s", tr("Coste: una inferencia cada N fotogramas en otro hilo + subida de un mapa pequeño. Calidad no medida.",
+                                    "Cost: one inference every N frames on a worker thread + small upload. Quality not measured."));
+    }
 
     ImGui::SeparatorText(tr("Escalado", "Upscaling"));
-    const char* ups[] = {tr("Desactivado (1:1 sobre la ventana)", "Off (1:1 over the window)"), "FSR 1 (EASU + RCAS)", tr("Bilineal", "Bilinear")};
-    if (ImGui::Combo(tr("Escalador", "Upscaler"), &g.cfg.upscale, ups, 3)) applyParams();
+    const char* ups[] = {tr("Desactivado (1:1 sobre la ventana)", "Off (1:1 over the window)"), "FSR 1 (EASU + RCAS)",
+                         tr("Bilineal", "Bilinear"), "FSR 3.1 (AMD, D3D12)", "XeSS SR (Intel)"};
+    if (ImGui::Combo(tr("Escalador", "Upscaler"), &g.cfg.upscale, ups, 5)) applyParams();
+    if (g.cfg.upscale == (int)UpscaleMode::Fsr3 && !g.fsr3)
+        ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "FSR 3.1: %s -> FSR1", g.fsr3Err.c_str());
+    if (g.cfg.upscale == (int)UpscaleMode::Xess && !g.xess)
+        ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "XeSS: %s -> FSR1", g.xessErr.c_str());
+    if (g.cfg.upscale >= (int)UpscaleMode::Fsr3) {
+        if (g.gen.temporalFailed()) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "%s", tr("Escalador temporal falló; usando FSR1", "Temporal upscaler failed; using FSR1"));
+        ImGui::TextWrapped("%s", tr("Aviso: la captura no tiene jitter ni profundidad real; un escalador temporal rinde menos que dentro del juego.",
+                                    "Note: captured frames have no jitter or real depth; temporal upscalers do less than in-engine."));
+        bool neg = g.cfg.mvSign < 0;
+        if (ImGui::Checkbox(tr("Invertir vectores de movimiento", "Invert motion vectors"), &neg)) { g.cfg.mvSign = neg ? -1.0f : 1.0f; applyParams(); }
+    }
     const char* scales[] = {tr("Ajustar a pantalla", "Fit to screen"), "1.5x", "2x", "3x"};
     ImGui::Combo(tr("Escala", "Scale"), &g.cfg.scale, scales, 4);
     if (ImGui::SliderFloat(tr("Nitidez", "Sharpness"), &g.cfg.sharpness, 0.0f, 1.0f, "%.2f")) applyParams();
@@ -334,6 +413,7 @@ void drawUi() {
 
     ImGui::SeparatorText(tr("Estadísticas", "Statistics"));
     ImGui::Text("%s: %.1f", tr("FPS reales (captura)", "Real FPS (capture)"), g.realFps);
+    ImGui::Text("%s: %.1f", tr("FPS generados", "Generated FPS"), g.genFps);
     ImGui::Text("%s: %.1f", tr("FPS de salida", "Output FPS"), g.outFps);
     ImGui::Text("%s: %.1f ms", tr("Latencia añadida estimada", "Estimated added latency"), g.latencyMs);
     ImGui::TextDisabled("%s", tr("(llegada del frame real -> Present, sin cola GPU/DWM)", "(real frame arrival -> Present, excl. GPU/DWM queue)"));
@@ -395,7 +475,7 @@ bool createUiWindow() {
     wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     RegisterClassExW(&wc);
     UINT dpi = GetDpiForSystem();
-    int w = MulDiv(460, dpi, 96), h = MulDiv(640, dpi, 96);
+    int w = MulDiv(460, dpi, 96), h = MulDiv(860, dpi, 96);
     g.ui = CreateWindowExW(0, wc.lpszClassName, L"FrameForge", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, w, h,
                            nullptr, nullptr, g.inst, nullptr);
     if (!g.ui) return false;
@@ -434,7 +514,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     logInit(dir + L"\\frameforge.log");
     g.iniPath = dir + L"\\frameforge.ini";
     if (!loadSettings(g.iniPath, g.cfg)) saveSettings(g.iniPath, g.cfg);
-    logf("FrameForge 0.1 starting");
+    logf("FrameForge 0.2 starting");
 
     if (!createDevice()) { MessageBoxW(nullptr, L"No se pudo crear el dispositivo Direct3D 11.", L"FrameForge", MB_ICONERROR); return 1; }
     if (!g.gen.init(g.dev.Get(), g.ctx.Get())) logf("Frame generation unavailable: %s", g.gen.error().c_str());
@@ -442,6 +522,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (!createUiWindow()) return 1;
     if (!WgcCapture::supported()) g.lastError = tr("Windows Graphics Capture no está soportado en este sistema.", "Windows Graphics Capture is not supported on this system.");
     if (!RegisterHotKey(g.ui, kHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'F')) logf("RegisterHotKey failed");
+    if (!RegisterHotKey(g.ui, kHotkeyOsd, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'H')) logf("RegisterHotKey(H) failed");
+    if (g.cfg.aiDepth && !g.depth.init(g.dev.Get(), g.ctx.Get(), DepthEstimator::defaultModelPath(), &g.depthErr)) g.cfg.aiDepth = 0;
     refreshWindows();
     applyParams();
 
@@ -462,7 +544,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         double now = nowSeconds();
         if (now - g.statT0 >= 1.0) {
             g.realFps = g.realCount / (now - g.statT0); g.outFps = g.outCount / (now - g.statT0);
-            g.realCount = g.outCount = 0; g.statT0 = now;
+            g.genFps = g.genCount / (now - g.statT0);
+            g.realCount = g.outCount = g.genCount = 0; g.statT0 = now;
+            wchar_t osd[200];
+            swprintf(osd, 200, L"FrameForge ON  x%d\nReal: %.0f fps | %s: %.0f fps | Total: %.0f fps",
+                     g.passthrough ? 1 : g.cfg.multiplier, g.realFps, g.cfg.lang == 1 ? L"Generated" : L"Generados", g.genFps, g.outFps);
+            g.overlay.setOsd(g.cfg.osd != 0, osd);
+        }
+        if (g.overlay.visible()) {
+            static int lastOsd = -1;
+            if (lastOsd != g.cfg.osd) { lastOsd = g.cfg.osd; g.overlay.setOsd(g.cfg.osd != 0, g.cfg.osd ? L"FrameForge ON" : L""); }
         }
         if (now - lastUi >= 1.0 / 30.0) { renderUi(); lastUi = now; }
 

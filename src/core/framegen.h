@@ -1,6 +1,7 @@
 #pragma once
 #include "core/gpu.h"
 #include "core/upscale.h"
+#include "core/temporal.h"
 #include <vector>
 
 namespace ff {
@@ -33,6 +34,14 @@ public:
     // Newest captured frame at source resolution (for pass-through fallback).
     ID3D11ShaderResourceView* sourceSRV() { return m_src.srv.Get(); }
     Upscaler& upscaler() { return m_up; }
+    // Optional temporal upscaler (FSR 3.1 / XeSS). Not owned. nullptr = spatial upscaler.
+    void setTemporal(TemporalUpscaler* t) { m_temporal = t; m_temporalReset = true; }
+    bool temporalFailed() const { return m_temporalFailed; }
+    // Optional inverse-depth map (1 = near), any resolution; nullptr disables depth use.
+    void setDepth(ID3D11ShaderResourceView* d) { m_depthSRV = d; }
+    float frameMs = 16.6f;
+    float mvScale = 1.0f;
+    float depthGain = 8.0f;
 
     UINT srcW = 0, srcH = 0, outW = 0, outH = 0, baseW = 0, baseH = 0;
     int levels = 0;
@@ -56,6 +65,13 @@ private:
     std::vector<Tex2D> m_pyr[2];       // luma pyramids
     std::vector<Tex2D> m_fwd, m_bwd, m_tmp;
     Tex2D m_occ, m_stable[2], m_hud;
+    Tex2D m_rgba, m_mv, m_depthIn;     // temporal-upscaler inputs (source res)
+    ComPtr<ID3D11ComputeShader> m_mvCS;
+    TemporalUpscaler* m_temporal = nullptr;
+    bool m_temporalReset = true, m_temporalFailed = false;
+    ID3D11ShaderResourceView* m_depthSRV = nullptr;
+    Tex2D m_depthDummy;
+    void upscaleNewest(int nw);
     int m_newest = 0, m_stableIdx = 0;
     uint64_t m_count = 0;
     bool m_ok = false;

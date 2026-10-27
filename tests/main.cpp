@@ -3,6 +3,8 @@
 #include "core/pacer.h"
 #include "core/upscale.h"
 #include "core/log.h"
+#include "core/temporal.h"
+#include "core/depth_ai.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -74,7 +76,97 @@ static void testPacer() {
     }
 }
 
-int main() {
+#define SKIP(...) do { std::printf("[SKIP] "); std::printf(__VA_ARGS__); std::printf("\n"); } while (0)
+
+// Foreground square moving over a static background; measures interpolation error near the square
+// with and without a (synthetic) depth map.
+static void testDepthOrdering(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
+    const int S = 40, V = 8;
+    auto frame = [&](float k) {
+        std::vector<uint8_t> px((size_t)W * H * 4);
+        float x0 = 60 + V * k;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                bool fg = x >= x0 && x < x0 + S && y >= 70 && y < 70 + S;
+                float v = fg ? 0.1f + 0.8f * vnoise(x - x0 + 500.0f, (float)y, 5.0f)
+                             : 0.2f + 0.5f * vnoise((float)x, (float)y, 7.0f);
+                uint8_t b = (uint8_t)std::clamp(v * 255.0f, 0.0f, 255.0f);
+                uint8_t* p = &px[((size_t)y * W + x) * 4];
+                p[0] = p[1] = p[2] = b; p[3] = 255;
+            }
+        return px;
+    };
+    std::vector<float> dm((size_t)W * H, 0.0f);
+    for (int y = 66; y < 74 + S; ++y)
+        for (int x = 60 + V * 2 - 4; x < 60 + V * 3 + S + 4; ++x) if (x < W) dm[(size_t)y * W + x] = 1.0f;
+    Tex2D depth; createTex(dev, W, H, DXGI_FORMAT_R32_FLOAT, 0, depth, dm.data(), W * 4);
+    double err[2] = {0, 0};
+    for (int useDepth = 0; useDepth < 2; ++useDepth) {
+        FrameGen g; g.params.downscale = 1; g.params.useFsr = false;
+        g.init(dev, ctx); g.resize(W, H, W, H);
+        g.setDepth(useDepth ? depth.srv.Get() : nullptr);
+        Tex2D out; createTex(dev, W, H, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS, out);
+        D3D11_BOX box{0, 0, 0, (UINT)W, (UINT)H, 1};
+        for (int k = 0; k <= 3; ++k) { Tex2D f; upload(dev, frame((float)k), f); g.pushFrame(f.tex.Get(), box); }
+        g.render(0.5f, false, 0, out.uav.Get());
+        std::vector<uint8_t> raw; readback(dev, ctx, out.tex.Get(), 4, raw);
+        auto gt = frame(2.5f);
+        double e = 0; int n = 0;
+        for (int y = 60; y < 120; ++y)
+            for (int x = 70; x < 150; ++x) { size_t i = ((size_t)y * W + x) * 4; e += std::fabs((float)raw[i] - gt[i]); ++n; }
+        err[useDepth] = e / n;
+    }
+    CHECK(err[1] <= err[0] * 1.05 + 0.1, "depth-ordered blend near moving edge: MAE %.2f with depth vs %.2f without", err[1], err[0]);
+}
+
+static void testTemporal(ID3D11Device* dev, ID3D11DeviceContext* ctx, std::unique_ptr<TemporalUpscaler> up) {
+    std::string e;
+    const char* nm = up->name();
+    if (!up->init(dev, ctx, exeDir(), &e)) { SKIP("%s init on this device: %s", nm, e.c_str()); return; }
+    FrameGen g; g.params.downscale = 1; g.params.useFsr = false;
+    g.init(dev, ctx);
+    g.setTemporal(up.get());
+    const UINT OW = W * 3 / 2, OH = H * 3 / 2;
+    g.resize(W, H, OW, OH);
+    if (g.temporalFailed()) { SKIP("%s context creation failed on this device (see log)", nm); return; }
+    Tex2D out; createTex(dev, OW, OH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS, out);
+    D3D11_BOX box{0, 0, 0, (UINT)W, (UINT)H, 1};
+    for (int k = 0; k < 4; ++k) { Tex2D f; upload(dev, makeFrame((float)k), f); g.pushFrame(f.tex.Get(), box); }
+    if (g.temporalFailed()) { SKIP("%s dispatch failed on this device (see log)", nm); return; }
+    g.render(1, true, 0, out.uav.Get());
+    std::vector<uint8_t> raw; readback(dev, ctx, out.tex.Get(), 4, raw);
+    auto ref = makeFrame(3);
+    double mIn = 0, mOut = 0;
+    for (size_t i = 0; i < ref.size(); i += 4) mIn += ref[i];
+    for (size_t i = 0; i < raw.size(); i += 4) mOut += raw[i];
+    mIn /= ref.size() / 4; mOut /= raw.size() / 4;
+    CHECK(std::fabs(mIn - mOut) < mIn * 0.05 && SUCCEEDED(dev->GetDeviceRemovedReason()),
+          "%s 1.5x via interop: mean in %.2f out %.2f", nm, mIn, mOut);
+}
+
+static void testDepthModel(const wchar_t* model) {
+    DepthEstimator d; std::string e;
+    if (!d.init(nullptr, nullptr, model, &e)) { CHECK(false, "depth model init: %s", e.c_str()); return; }
+    std::vector<uint8_t> img((size_t)DepthEstimator::kW * DepthEstimator::kH * 4);
+    // Synthetic scene: bright near disc over a darker ground gradient.
+    for (UINT y = 0; y < DepthEstimator::kH; ++y)
+        for (UINT x = 0; x < DepthEstimator::kW; ++x) {
+            uint8_t* p = &img[((size_t)y * DepthEstimator::kW + x) * 4];
+            float dx = x - 133.0f, dy = y - 77.0f;
+            bool disc = dx * dx + dy * dy < 900;
+            uint8_t v = disc ? 220 : (uint8_t)(40 + y);
+            p[0] = v; p[1] = (uint8_t)(v * 0.9f); p[2] = (uint8_t)(v * 0.8f); p[3] = 255;
+        }
+    std::vector<float> out;
+    bool ok = d.inferSync(img, out, &e);
+    float mn = 1, mx = 0;
+    for (float v : out) { mn = std::min(mn, v); mx = std::max(mx, v); }
+    CHECK(ok && out.size() == (size_t)DepthEstimator::kW * DepthEstimator::kH && mx - mn > 0.5f,
+          "depth model (%s) %ux%u: %.1f ms, range %.2f..%.2f", d.usingGpu() ? "DirectML" : "CPU",
+          DepthEstimator::kW, DepthEstimator::kH, d.inferMs(), mn, mx);
+}
+
+int main(int argc, char** argv) {
     logInit(exeDir() + L"\\frameforge_tests.log");
     testPacer();
 
@@ -198,6 +290,13 @@ int main() {
         mIn /= f.size() / 4; mOut /= raw.size() / 4;
         CHECK(std::fabs(mIn - mOut) < mIn * 0.03, "FSR1 1.5x: mean in %.2f out %.2f", mIn, mOut);
     }
+    testDepthOrdering(dev.Get(), ctx.Get());
+    testTemporal(dev.Get(), ctx.Get(), createFsr3Upscaler());
+    testTemporal(dev.Get(), ctx.Get(), createXessUpscaler());
+    if (argc > 1) {
+        wchar_t wp[MAX_PATH]; MultiByteToWideChar(CP_UTF8, 0, argv[1], -1, wp, MAX_PATH);
+        testDepthModel(wp);
+    } else SKIP("depth model test (no model path given)");
     std::printf("%s (%d failures)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail);
     return g_fail ? 1 : 0;
 }

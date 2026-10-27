@@ -38,6 +38,10 @@ bool Overlay::create(HINSTANCE inst, ID3D11Device* dev, ID3D11DeviceContext* ctx
         BOOL t = FALSE;
         if (SUCCEEDED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &t, sizeof t))) m_tearing = t != FALSE;
     }
+    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2d.GetAddressOf());
+    DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(m_dw.GetAddressOf()));
+    if (m_dw) m_dw->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, 15.0f, L"", &m_font);
     logf("Overlay created, tearing supported: %d", (int)m_tearing);
     return m_vs && m_ps;
 }
@@ -59,10 +63,32 @@ bool Overlay::createSwapchain() {
     sc1.As(&m_sc);
     m_sc->SetMaximumFrameLatency(1);
     m_wait = m_sc->GetFrameLatencyWaitableObject();
-    ComPtr<ID3D11Texture2D> bb; m_sc->GetBuffer(0, IID_PPV_ARGS(&bb));
-    m_dev->CreateRenderTargetView(bb.Get(), nullptr, &m_rtv);
+    createTargets();
     m_ready = false;
     return true;
+}
+
+void Overlay::createTargets() {
+    ComPtr<ID3D11Texture2D> bb; m_sc->GetBuffer(0, IID_PPV_ARGS(&bb));
+    m_dev->CreateRenderTargetView(bb.Get(), nullptr, &m_rtv);
+    if (!m_d2d) return;
+    ComPtr<IDXGISurface> surf; bb.As(&surf);
+    D2D1_RENDER_TARGET_PROPERTIES p = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96.0f, 96.0f);
+    if (surf && SUCCEEDED(m_d2d->CreateDxgiSurfaceRenderTarget(surf.Get(), &p, &m_rt2d))) {
+        m_rt2d->CreateSolidColorBrush(D2D1::ColorF(0.3f, 1.0f, 0.4f), &m_fg);
+        m_rt2d->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.6f), &m_bg);
+    }
+}
+
+void Overlay::drawOsd() {
+    if (!m_osdOn || !m_rt2d || !m_font || m_osd.empty()) return;
+    m_rt2d->BeginDraw();
+    D2D1_RECT_F r = D2D1::RectF(6, 6, 6 + 9.0f * 60, 6 + 44);
+    m_rt2d->FillRectangle(r, m_bg.Get());
+    D2D1_RECT_F t = D2D1::RectF(12, 9, r.right, r.bottom);
+    m_rt2d->DrawText(m_osd.c_str(), (UINT32)m_osd.size(), m_font.Get(), t, m_fg.Get());
+    m_rt2d->EndDraw();
 }
 
 bool Overlay::place(const RECT& r) {
@@ -74,14 +100,13 @@ bool Overlay::place(const RECT& r) {
     }
     if (!m_sc) { m_w = w; m_h = h; return createSwapchain(); }
     if (w != m_w || h != m_h) {
-        m_rtv.Reset();
+        m_rtv.Reset(); m_rt2d.Reset(); m_fg.Reset(); m_bg.Reset();
         m_ctx->OMSetRenderTargets(0, nullptr, nullptr);
         m_ctx->Flush();
         m_hr = m_sc->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, m_flags);
         if (FAILED(m_hr)) { logf("ResizeBuffers failed 0x%08x", (unsigned)m_hr); return false; }
         m_w = w; m_h = h;
-        ComPtr<ID3D11Texture2D> bb; m_sc->GetBuffer(0, IID_PPV_ARGS(&bb));
-        m_dev->CreateRenderTargetView(bb.Get(), nullptr, &m_rtv);
+        createTargets();
         logf("Overlay resized %ux%u", w, h);
     }
     return true;
@@ -93,7 +118,7 @@ void Overlay::hide() {
 }
 
 void Overlay::destroy() {
-    m_rtv.Reset(); m_sc.Reset();
+    m_rtv.Reset(); m_rt2d.Reset(); m_sc.Reset();
     if (m_hwnd) DestroyWindow(m_hwnd);
     m_hwnd = nullptr;
 }
@@ -124,6 +149,7 @@ bool Overlay::present(ID3D11ShaderResourceView* img, const RECT& dst, bool allow
     ID3D11ShaderResourceView* nul = nullptr;
     m_ctx->PSSetShaderResources(0, 1, &nul);
     m_ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    drawOsd();
     UINT flags = (allowTearing && m_tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
     m_hr = m_sc->Present(0, flags);
     m_ready = false;

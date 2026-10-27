@@ -26,13 +26,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          foreach ($r in @("GPUOpenLibrariesAndSDKs/FidelityFX-SDK", "intel/xess", "GPUOpen-Effects/FidelityFX-FSR")) {
+          foreach ($r in @("GPUOpen-LibrariesAndSDKs/FidelityFX-SDK", "intel/xess", "GPUOpen-Effects/FidelityFX-FSR")) {
             $rel = "n/a"; $lic = "n/a"
             try { $rel = (gh api "repos/$r/releases/latest" | ConvertFrom-Json).tag_name } catch {}
             try { $lic = (gh api "repos/$r/license" | ConvertFrom-Json).license.spdx_id } catch {}
             "* $r : latest release **$rel**, licence **$lic**" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
             "::notice::$r latest $rel licence $lic"
           }
+
+      - name: Check depth model licence and fetch it for the test
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          foreach ($m in @("onnx-community/depth-anything-v2-small", "depth-anything/Depth-Anything-V2-Small")) {
+            try { $j = Invoke-RestMethod "https://huggingface.co/api/models/$m"; "::notice::HF $m licence: $($j.cardData.license) tags: $(($j.tags | Where-Object { $_ -like 'license:*' }) -join ',')" } catch { "::warning::HF $m query failed: $_" }
+          }
+          New-Item -ItemType Directory -Force models | Out-Null
+          Invoke-WebRequest "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx" -OutFile models\depth.onnx
+          $h = (Get-FileHash models\depth.onnx -Algorithm SHA256).Hash
+          "::notice::depth model size $((Get-Item models\depth.onnx).Length) sha256 $h"
 
       - name: Configure
         run: cmake -S . -B build -A x64
@@ -43,7 +55,8 @@ jobs:
       - name: Headless tests (WARP)
         shell: pwsh
         run: |
-          $out = & build\Release\frameforge_tests.exe
+          $arg = @(); if (Test-Path models\depth.onnx) { $arg = @((Resolve-Path models\depth.onnx).Path) }
+          $out = & build\Release\frameforge_tests.exe @arg
           $code = $LASTEXITCODE
           $out | Where-Object { $_ -like '`[FAIL`]*' } | ForEach-Object { "::error::$_" }
           "::notice::TESTS " + ($out -join ' || ')
@@ -61,7 +74,16 @@ jobs:
           $dll = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Redist\D3D\x64\d3dcompiler_47.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $dll) { $dll = Get-Item "$env:WINDIR\System32\d3dcompiler_47.dll" }
           Copy-Item $dll.FullName $d
+          Copy-Item build\Release\*.dll $d
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*" -Include msvcp140.dll,vcruntime140.dll,vcruntime140_1.dll | Sort-Object FullName -Descending | Group-Object Name | ForEach-Object { Copy-Item $_.Group[0].FullName $d }
           Copy-Item packaging\frameforge.ini, packaging\LEEME.txt, THIRD_PARTY.txt $d
+          $l = "$d\licenses"; New-Item -ItemType Directory -Force $l | Out-Null
+          Copy-Item build\ffxsdk\Kits\FidelityFX\docs\license.md "$l\AMD_FidelityFX_SDK_license.md"
+          Copy-Item build\xess\LICENSE.txt "$l\Intel_XeSS_LICENSE.txt"
+          Get-ChildItem build\ort -File | Where-Object { $_.Name -match 'LICENSE|ThirdParty' } | ForEach-Object { Copy-Item $_.FullName "$l\onnxruntime_$($_.Name)" }
+          Get-ChildItem build\dml -File | Where-Object { $_.Name -match 'LICENSE|ThirdParty' } | ForEach-Object { Copy-Item $_.FullName "$l\DirectML_$($_.Name)" }
+          "::notice::package files: " + ((Get-ChildItem $d -Recurse -File | ForEach-Object { $_.FullName.Substring((Resolve-Path $d).Path.Length + 1) }) -join ', ')
           Compress-Archive -Path "$d\*" -DestinationPath dist\FrameForge-win64.zip -Force
           $md5 = (Get-FileHash dist\FrameForge-win64.zip -Algorithm MD5).Hash.ToLower()
           "FrameForge-win64.zip md5: $md5" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append

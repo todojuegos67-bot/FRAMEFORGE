@@ -6,11 +6,13 @@ Texture2D<float2> gF : register(t2);     // flow A->B (base px)
 Texture2D<float2> gBw : register(t3);    // flow B->A (base px)
 Texture2D<float2> gOcc : register(t4);   // r: A-only, g: B-only
 Texture2D<float> gHud : register(t5);    // static HUD mask (base res)
+Texture2D<float> gInvDepth : register(t6); // optional inverse depth (1 = near), Modo IA
 RWTexture2D<float4> gOut : register(u0);
 cbuffer C : register(b0) {
     uint2 outSize; float2 invOut;
     float2 flowUvScale; float2 invBase;
     float t; uint mode; uint isReal; uint hasFlow;
+    uint useDepth; float depthGain; float2 pad;
 };
 
 float3 hsv2rgb(float h, float s, float v) {
@@ -42,6 +44,15 @@ void main(uint3 id : SV_DispatchThreadID) {
         if (any(uvB < 0) || any(uvB > 1)) oA = 1;
         float wA = (1.0 - t) * (1.0 - oB);
         float wB = t * (1.0 - oA);
+        if (useDepth) {
+            // Depth-ordered blending: where the two warps disagree, trust the nearer surface.
+            float dA = gInvDepth.SampleLevel(sLinear, uvA, 0);
+            float dB = gInvDepth.SampleLevel(sLinear, uvB, 0);
+            float disagree = saturate(length(cA - cB) * 4.0);
+            float k = exp(clamp((dA - dB) * depthGain, -8.0, 8.0));
+            wA *= lerp(1.0, k, disagree);
+            wB *= lerp(1.0, 1.0 / k, disagree);
+        }
         if (wA + wB < 1e-3) { wA = 1.0 - t; wB = t; }
         col = (cA * wA + cB * wB) / (wA + wB);
         float3 hudCol = t < 0.5 ? gA.SampleLevel(sPoint, uv, 0).rgb : gB.SampleLevel(sPoint, uv, 0).rgb;
@@ -54,6 +65,8 @@ void main(uint3 id : SV_DispatchThreadID) {
     } else if (mode == 2 && hasFlow) {
         float2 o = gOcc.SampleLevel(sLinear, fuv, 0);
         col = float3(o.r, o.g, 0) + luma(col) * 0.35;
+    } else if (mode == 4 && useDepth) {
+        col = gInvDepth.SampleLevel(sLinear, uv, 0).xxx;
     } else if (mode == 3) {
         col = lerp(col, float3(1, 0, 1), hud * 0.6);
     }

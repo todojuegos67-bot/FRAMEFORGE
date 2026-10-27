@@ -1,6 +1,9 @@
 #pragma once
 #include "core/gpu.h"
 #include <dxgi1_5.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <string>
 
 namespace ff {
 // Borderless, topmost, click-through, capture-excluded window with a flip-model swapchain.
@@ -18,11 +21,22 @@ public:
     // Draws img into dst (client coords) and presents. Returns false on device errors.
     bool present(ID3D11ShaderResourceView* img, const RECT& dst, bool allowTearing);
     bool tearingSupported() const { return m_tearing; }
+    // On-screen status text (drawn only on the output, never fed back into capture).
+    void setOsd(bool on, const std::wstring& text) { m_osdOn = on; m_osd = text; }
     UINT width() const { return m_w; }
     UINT height() const { return m_h; }
     HRESULT lastError() const { return m_hr; }
 private:
     bool createSwapchain();
+    void createTargets();
+    void drawOsd();
+    ComPtr<ID2D1Factory> m_d2d;
+    ComPtr<IDWriteFactory> m_dw;
+    ComPtr<IDWriteTextFormat> m_font;
+    ComPtr<ID2D1RenderTarget> m_rt2d;
+    ComPtr<ID2D1SolidColorBrush> m_fg, m_bg;
+    bool m_osdOn = true;
+    std::wstring m_osd;
     HWND m_hwnd = nullptr;
     ID3D11Device* m_dev = nullptr;
     ID3D11DeviceContext* m_ctx = nullptr;
