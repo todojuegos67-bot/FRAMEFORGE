@@ -19,7 +19,8 @@ public:
         float occThr = 1.0f;      // px
         bool useFsr = true;
         float sharpness = 0.5f;
-        bool legacy = false;      // v0.1 path: 4x4 grid flow sampled bilinearly
+        bool legacy = false;
+        bool fallback = true;     // low-confidence -> nearest real frame; static -> 1:1 copy      // v0.1 path: 4x4 grid flow sampled bilinearly
     } params;
 
     bool init(ID3D11Device* dev, ID3D11DeviceContext* ctx);

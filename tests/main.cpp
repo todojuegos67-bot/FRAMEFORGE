@@ -172,11 +172,12 @@ static void testDepthModel(const wchar_t* model) {
 // frame10i11.png, interpolate t=0.5 with several methods and report PSNR / SSIM.
 static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstring& framesDir, const std::wstring& gtDir) {
     namespace fs = std::filesystem;
-    struct M { const char* name; int kind; int ds; bool legacy; };
-    const M methods[] = {{"repeat-previous", 0, 0, false}, {"linear-blend", 1, 0, false},
-                         {"v0.1 (grid flow, ds2)", 2, 2, true}, {"v0.2 (dense flow, ds2)", 2, 2, false},
-                         {"v0.2 (dense flow, ds1)", 2, 1, false}};
-    const int NM = 5;
+    struct M { const char* name; int kind; int ds; bool legacy; bool fb; };
+    const M methods[] = {{"repeat-previous", 0, 0, false, false}, {"linear-blend", 1, 0, false, false},
+                         {"v0.1 grid", 2, 2, true, false}, {"grid+fallback", 2, 2, true, true},
+                         {"dense", 2, 2, false, false}, {"dense+fallback", 2, 2, false, true},
+                         {"dense ds1", 2, 1, false, false}};
+    const int NM = 7;
     double sp[NM] = {}, ss[NM] = {}; int nseq = 0;
     std::string table;
     for (auto& e : fs::directory_iterator(gtDir)) {
@@ -196,7 +197,7 @@ static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstri
                 for (size_t i = 0; i < rgba.size(); i += 4)
                     for (int c = 0; c < 3; ++c) rgba[i + c] = (uint8_t)((a.bgra[i + 2 - c] + b.bgra[i + 2 - c] + 1) / 2);
             } else {
-                FrameGen g; g.params.downscale = methods[m].ds; g.params.legacy = methods[m].legacy; g.params.useFsr = false;
+                FrameGen g; g.params.downscale = methods[m].ds; g.params.legacy = methods[m].legacy; g.params.fallback = methods[m].fb; g.params.useFsr = false;
                 g.params.hud = false;
                 g.init(dev, ctx); g.resize(w, h, w, h);
                 Tex2D ta, tb, out;
@@ -218,8 +219,9 @@ static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstri
     if (!nseq) { std::printf("[FAIL] eval: no sequences found\n"); return 1; }
     for (int m = 0; m < NM; ++m)
         std::printf("[EVAL] mean over %d sequences: %s PSNR %.2f dB SSIM %.4f\n", nseq, methods[m].name, sp[m] / nseq, ss[m] / nseq);
-    bool better = sp[3] > sp[2] && ss[3] > ss[2] && sp[3] > sp[0] && ss[3] > ss[0];
-    std::printf("[%s] v0.2 ds2 beats v0.1 and repeat-previous on mean PSNR and SSIM\n", better ? "PASS" : "FAIL");
+    int ship = std::getenv("FF_SHIP_METHOD") ? std::atoi(std::getenv("FF_SHIP_METHOD")) : 5;
+    bool better = sp[ship] > sp[2] && ss[ship] > ss[2] && sp[ship] > sp[0] && ss[ship] > ss[0];
+    std::printf("[%s] '%s' beats v0.1 and repeat-previous on mean PSNR and SSIM\n", better ? "PASS" : "FAIL", methods[ship].name);
     return better ? 0 : 1;
 }
 

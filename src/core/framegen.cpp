@@ -204,7 +204,7 @@ void FrameGen::render(float t, bool real, int mode, ID3D11UnorderedAccessView* o
     InterpCB cb{{outW, outH}, {1.0f / outW, 1.0f / outH},
                 {lg ? (float)baseW / (m_fwd[0].w * kCell) : 1.0f, lg ? (float)baseH / (m_fwd[0].h * kCell) : 1.0f},
                 {1.0f / baseW, 1.0f / baseH}, t, (uint32_t)mode, (real || !pair) ? 1u : 0u, pair ? 1u : 0u,
-                m_depthSRV ? 1u : 0u, depthGain, lg ? 0u : 1u, 0};
+                m_depthSRV ? 1u : 0u, depthGain, params.fallback ? 1u : 0u, 0};
     m_cb.set(m_ctx, &cb, sizeof cb);
     int prev = pair ? 1 - m_newest : m_newest;
     // Flow values are in base pixels; the shader converts using the flow texture size (grid*cell).
