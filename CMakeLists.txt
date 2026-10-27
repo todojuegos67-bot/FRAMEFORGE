@@ -142,7 +142,7 @@ add_library(ffcore STATIC
 target_include_directories(ffcore PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(ffcore PRIVATE ${FFXSDK_DIR}/Kits/FidelityFX ${XESS_DIR}/inc ${ORT_DIR}/build/native/include)
 target_compile_definitions(ffcore PRIVATE ORT_API_MANUAL_INIT _WINDOWS)
-target_link_libraries(ffcore PUBLIC d3d11 d3d12 dxgi d3dcompiler urlmon ${ORT_DIR}/runtimes/win-x64/native/onnxruntime.lib delayimp)
+target_link_libraries(ffcore PUBLIC d3d11 d3d12 dxgi d3dcompiler urlmon bcrypt ${ORT_DIR}/runtimes/win-x64/native/onnxruntime.lib delayimp)
 
 # Runtime DLLs next to the executables (all loaded lazily; the app runs without them).
 set(FF_RUNTIME_DLLS

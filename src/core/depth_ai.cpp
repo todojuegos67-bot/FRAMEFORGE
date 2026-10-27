@@ -3,6 +3,8 @@
 #include <onnxruntime_cxx_api.h>
 #include <dml_provider_factory.h>
 #include <urlmon.h>
+#include <bcrypt.h>
+#include <cstdio>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -16,6 +18,31 @@ struct DepthEstimator::OrtState {
     Ort::Session session{nullptr};
     std::string inName, outName;
 };
+
+// SHA-256 of onnx-community/depth-anything-v2-small onnx/model.onnx (Apache-2.0), recorded by CI.
+static const char* kModelSha256 = "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c";
+
+static std::string sha256File(const std::wstring& path) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) return {};
+    BCRYPT_ALG_HANDLE alg = nullptr; BCRYPT_HASH_HANDLE h = nullptr;
+    std::string hex;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0 &&
+        BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) == 0) {
+        std::vector<unsigned char> buf(1 << 20);
+        size_t n;
+        while ((n = fread(buf.data(), 1, buf.size(), f)) > 0) BCryptHashData(h, buf.data(), (ULONG)n, 0);
+        unsigned char dig[32];
+        if (BCryptFinishHash(h, dig, 32, 0) == 0) {
+            char t[3];
+            for (unsigned char c : dig) { snprintf(t, 3, "%02x", c); hex += t; }
+        }
+    }
+    if (h) BCryptDestroyHash(h);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    fclose(f);
+    return hex;
+}
 
 std::wstring DepthEstimator::defaultModelPath() { return exeDir() + L"\\models\\depth_anything_v2_small.onnx"; }
 
@@ -38,7 +65,9 @@ void DepthEstimator::startDownload(const std::wstring& path) {
         std::wstring part = path + L".part";
         HRESULT hr = URLDownloadToFileW(nullptr, kModelUrl, part.c_str(), 0, nullptr);
         std::string st;
-        if (SUCCEEDED(hr) && modelPresent(part) && MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) st = "ok";
+        bool hashOk = SUCCEEDED(hr) && sha256File(part) == kModelSha256;
+        if (SUCCEEDED(hr) && !hashOk) logf("Depth model SHA-256 mismatch; discarded");
+        if (hashOk && modelPresent(part) && MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) st = "ok";
         else { DeleteFileW(part.c_str()); st = "failed (0x" + std::to_string((unsigned)hr) + ")"; }
         logf("Depth model download: %s", st.c_str());
         { std::lock_guard<std::mutex> l(m_mx); m_dlStatus = st; }

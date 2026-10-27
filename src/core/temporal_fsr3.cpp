@@ -130,11 +130,11 @@ public:
 private:
     bool fail(std::string* err, const std::string& m) { if (err) *err = m; logf("FSR3.1: %s", m.c_str()); return false; }
 
-    bool makeShared(UINT w, UINT h, DXGI_FORMAT fmt, bool uav, Shared& s) {
+    bool makeShared(UINT w, UINT hgt, DXGI_FORMAT fmt, bool uav, Shared& s) {
         s = {};
         D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd{};
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = w; rd.Height = h;
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = w; rd.Height = hgt;
         rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.Format = fmt; rd.SampleDesc.Count = 1;
         rd.Flags = uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
         if (FAILED(m_d12->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&s.r12))))
