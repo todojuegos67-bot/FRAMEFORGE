@@ -18,6 +18,7 @@ struct InterpCB {
     float flowUvScale[2]; float invBase[2];
     float t; uint32_t mode; uint32_t isReal; uint32_t hasFlow;
     uint32_t useDepth; float depthGain; uint32_t quality; float pad;
+    float fbLo; float fbRamp; float pad2[2];
 };
 struct RefineCB { uint32_t size[2]; float inv[2]; uint32_t grid[2]; float cell; float pad; };
 struct JbfCB { uint32_t size[2]; int32_t step; float sigmaL; };
@@ -204,7 +205,7 @@ void FrameGen::render(float t, bool real, int mode, ID3D11UnorderedAccessView* o
     InterpCB cb{{outW, outH}, {1.0f / outW, 1.0f / outH},
                 {lg ? (float)baseW / (m_fwd[0].w * kCell) : 1.0f, lg ? (float)baseH / (m_fwd[0].h * kCell) : 1.0f},
                 {1.0f / baseW, 1.0f / baseH}, t, (uint32_t)mode, (real || !pair) ? 1u : 0u, pair ? 1u : 0u,
-                m_depthSRV ? 1u : 0u, depthGain, params.fallback ? 1u : 0u, 0};
+                m_depthSRV ? 1u : 0u, depthGain, params.fallback ? 1u : 0u, 0, params.fbLo, params.fbRamp, {0, 0}};
     m_cb.set(m_ctx, &cb, sizeof cb);
     int prev = pair ? 1 - m_newest : m_newest;
     // Flow values are in base pixels; the shader converts using the flow texture size (grid*cell).

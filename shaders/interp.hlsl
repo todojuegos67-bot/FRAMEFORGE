@@ -13,6 +13,7 @@ cbuffer C : register(b0) {
     float2 flowUvScale; float2 invBase;
     float t; uint mode; uint isReal; uint hasFlow;
     uint useDepth; float depthGain; uint quality; float pad;
+    float fbLo; float fbRamp; float2 pad2;
 };
 
 float3 hsv2rgb(float h, float s, float v) {
@@ -63,7 +64,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             float3 dd = abs(cA - cB);
             float disagree = max(dd.r, max(dd.g, dd.b));
             float occ = max(oA, oB);
-            float lowConf = saturate((disagree - 0.08) / 0.08) * (1.0 - occ);
+            float lowConf = saturate((disagree - fbLo) / fbRamp) * (1.0 - occ);
             col = lerp(col, nearest, lowConf);
             // Static: unchanged pixel with negligible motion -> copy 1:1.
             float3 sd = abs(nA - nB);

@@ -172,12 +172,13 @@ static void testDepthModel(const wchar_t* model) {
 // frame10i11.png, interpolate t=0.5 with several methods and report PSNR / SSIM.
 static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstring& framesDir, const std::wstring& gtDir) {
     namespace fs = std::filesystem;
-    struct M { const char* name; int kind; int ds; bool legacy; bool fb; };
+    struct M { const char* name; int kind; int ds; bool legacy; bool fb; float lo = 0.25f, ramp = 0.15f; };
     const M methods[] = {{"repeat-previous", 0, 0, false, false}, {"linear-blend", 1, 0, false, false},
                          {"v0.1 grid", 2, 2, true, false}, {"grid+fallback", 2, 2, true, true},
-                         {"dense", 2, 2, false, false}, {"dense+fallback", 2, 2, false, true},
-                         {"dense ds1", 2, 1, false, false}};
-    const int NM = 7;
+                         {"dense", 2, 2, false, false}, {"dense+fallback(0.25)", 2, 2, false, true},
+                         {"dense ds1", 2, 1, false, false}, {"dense+fallback(0.08)", 2, 2, false, true, 0.08f, 0.08f},
+                         {"dense+fallback(0.40)", 2, 2, false, true, 0.40f, 0.20f}};
+    const int NM = 9;
     double sp[NM] = {}, ss[NM] = {}; int nseq = 0;
     std::string table;
     for (auto& e : fs::directory_iterator(gtDir)) {
@@ -197,7 +198,7 @@ static int runEval(ID3D11Device* dev, ID3D11DeviceContext* ctx, const std::wstri
                 for (size_t i = 0; i < rgba.size(); i += 4)
                     for (int c = 0; c < 3; ++c) rgba[i + c] = (uint8_t)((a.bgra[i + 2 - c] + b.bgra[i + 2 - c] + 1) / 2);
             } else {
-                FrameGen g; g.params.downscale = methods[m].ds; g.params.legacy = methods[m].legacy; g.params.fallback = methods[m].fb; g.params.useFsr = false;
+                FrameGen g; g.params.downscale = methods[m].ds; g.params.legacy = methods[m].legacy; g.params.fallback = methods[m].fb; g.params.fbLo = methods[m].lo; g.params.fbRamp = methods[m].ramp; g.params.useFsr = false;
                 g.params.hud = false;
                 g.init(dev, ctx); g.resize(w, h, w, h);
                 Tex2D ta, tb, out;
