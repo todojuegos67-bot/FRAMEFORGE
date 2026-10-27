@@ -1,0 +1,77 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      draft_tag:
+        description: "Tag name for a DRAFT release (empty = no release). Releases are never published by CI."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check third-party SDK versions and licences
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          foreach ($r in @("GPUOpenLibrariesAndSDKs/FidelityFX-SDK", "intel/xess", "GPUOpen-Effects/FidelityFX-FSR")) {
+            $rel = "n/a"; $lic = "n/a"
+            try { $rel = (gh api "repos/$r/releases/latest" | ConvertFrom-Json).tag_name } catch {}
+            try { $lic = (gh api "repos/$r/license" | ConvertFrom-Json).license.spdx_id } catch {}
+            "* $r : latest release **$rel**, licence **$lic**" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Headless tests (WARP)
+        run: build\Release\frameforge_tests.exe
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $d = "dist\FrameForge"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item build\Release\FrameForge.exe $d
+          $dll = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Redist\D3D\x64\d3dcompiler_47.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dll) { $dll = Get-Item "$env:WINDIR\System32\d3dcompiler_47.dll" }
+          Copy-Item $dll.FullName $d
+          Copy-Item packaging\frameforge.ini, packaging\LEEME.txt, THIRD_PARTY.txt $d
+          Compress-Archive -Path "$d\*" -DestinationPath dist\FrameForge-win64.zip -Force
+          $md5 = (Get-FileHash dist\FrameForge-win64.zip -Algorithm MD5).Hash.ToLower()
+          "FrameForge-win64.zip md5: $md5" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameForge-win64
+          path: dist/FrameForge-win64.zip
+
+      - name: Draft release (never published)
+        if: github.event_name == 'workflow_dispatch' && inputs.draft_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.draft_tag }}
+        run: |
+          $existing = gh release view $env:TAG --json isDraft 2>$null | ConvertFrom-Json
+          if ($existing) {
+            if (-not $existing.isDraft) { throw "Release $env:TAG is already published; refusing to touch it." }
+            gh release upload $env:TAG dist/FrameForge-win64.zip --clobber
+          } else {
+            gh release create $env:TAG dist/FrameForge-win64.zip --draft --target $env:GITHUB_SHA --title "FrameForge $env:TAG (draft)" --notes "Borrador generado por CI. Draft built by CI. Not tested on real GPUs by CI (WARP only)."
+          }
