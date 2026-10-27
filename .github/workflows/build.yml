@@ -45,7 +45,8 @@ jobs:
         run: |
           $out = & build\Release\frameforge_tests.exe
           $code = $LASTEXITCODE
-          $out | ForEach-Object { if ($_ -like '*FAIL*') { "::error::$_" } else { "::notice::$_" } }
+          $out | Where-Object { $_ -like '`[FAIL`]*' } | ForEach-Object { "::error::$_" }
+          "::notice::TESTS " + ($out -join ' || ')
           "``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
           "``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
