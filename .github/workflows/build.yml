@@ -46,11 +46,17 @@ jobs:
           $h = (Get-FileHash models\depth.onnx -Algorithm SHA256).Hash
           "::notice::depth model size $((Get-Item models\depth.onnx).Length) sha256 $h"
 
-      - name: Configure
-        run: cmake -S . -B build -A x64
-
-      - name: Build
-        run: cmake --build build --config Release --parallel
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 2>&1 | Tee-Object -FilePath cfg.txt
+          if ($LASTEXITCODE -ne 0) { Get-Content cfg.txt | Select-Object -Last 25 | ForEach-Object { "::error::$_" }; exit 1 }
+          cmake --build build --config Release --parallel 2>&1 | Tee-Object -FilePath bld.txt
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Select-String -Path bld.txt -Pattern ' error |error C|error LNK|fatal error' | Select-Object -First 40 | ForEach-Object { "::error::" + $_.Line.Substring(0, [Math]::Min(400, $_.Line.Length)) }
+          }
+          exit $code
 
       - name: Headless tests (WARP)
         shell: pwsh
